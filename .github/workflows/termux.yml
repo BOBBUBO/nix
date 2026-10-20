@@ -1,0 +1,208 @@
+# Build Nix for Termux with Termux's own packaging toolchain and publish a
+# .deb that can be installed with `pkg install ./nix_*.deb`.
+#
+# The source tree already contains the Android/Termux patches (see
+# packaging/termux/README.md), so the job only overlays this checkout plus the
+# recipe into a termux-packages checkout and runs Termux's build-package.sh in
+# the official package-builder container. That container cross-compiles with
+# the same NDK toolchain Termux uses for its own packages; the resulting
+# binaries are native bionic/Android executables (no proot, no chroot).
+#
+# Triggers:
+#   - push tag v*        -> build and create a release named after the tag
+#   - workflow_dispatch  -> build and upload artifacts (optionally release)
+
+name: Termux package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Termux architecture"
+        required: true
+        default: aarch64
+        type: choice
+        options:
+          - aarch64
+          - arm
+          - i686
+          - x86_64
+      release:
+        description: "Create/update the 'nightly' prerelease"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: termux-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }} package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # aarch64 is the architecture the native build is verified on. The
+        # workflow_dispatch input selects another one for the other Termux
+        # ABIs (arm, i686, x86_64) if you want to test them.
+        arch: ${{ fromJSON(format('["{0}"]', github.event.inputs.arch || 'aarch64')) }}
+    steps:
+      - name: Checkout Nix (patched for Termux)
+        uses: actions/checkout@v4
+        with:
+          path: nix-src
+          persist-credentials: false
+
+      - name: Checkout termux-packages
+        uses: actions/checkout@v4
+        with:
+          repository: termux/termux-packages
+          path: termux-packages
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Overlay patched source and recipe
+        run: |
+          set -euo pipefail
+          rm -rf termux-packages/packages/nix
+          mkdir -p termux-packages/packages/nix/src
+          # Copy the tree (with the Android patches already applied), minus
+          # git metadata and the reference checkouts.
+          tar -C nix-src \
+            --exclude=.git \
+            --exclude=old-nix \
+            --exclude=apk-tools \
+            -cf - . \
+            | tar -C termux-packages/packages/nix/src -xf -
+          cp nix-src/packaging/termux/termux-packages/nix/build.sh \
+             termux-packages/packages/nix/build.sh
+
+      - name: Build the package in Termux's package-builder container
+        working-directory: termux-packages
+        run: |
+          set -euo pipefail
+          # -I  download/extract dependencies from the official Termux repos
+          # -C  clean the build directory first
+          # -o  write output .debs to ./output
+          CI=true ./scripts/run-docker.sh \
+            ./build-package.sh -I -C -a "${{ matrix.arch }}" \
+              --format debian -o output packages/nix
+
+      - name: Collect and sanity-check the package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          DEB="$(ls termux-packages/output/nix_*.deb | head -1)"
+          [ -n "$DEB" ] || { echo "no nix .deb produced" >&2; exit 1; }
+          cp "$DEB" dist/
+          NIX_VERSION="$(basename "$DEB" | sed -E 's/^nix_//; s/_(aarch64|arm|i686|x86_64)\.deb$//')"
+
+          # The package must contain the multi-call binary and every legacy
+          # frontend, including nix-env (the reason this fork exists).
+          for f in usr/bin/nix usr/bin/nix-env usr/bin/nix-store usr/bin/nix-instantiate; do
+            dpkg-deb -c "$DEB" | grep -Eq "/$f( ->|$)" \
+              || { echo ".deb is missing $f" >&2; exit 1; }
+          done
+          dpkg-deb -c "$DEB" | grep -Eq 'usr/bin/nix-env -> nix$' \
+            || echo "note: nix-env is not a symlink to nix; checking executable presence only"
+
+          # Extract a standalone tree for users who do not have dpkg.
+          rm -rf extracted
+          dpkg-deb -x "$DEB" extracted
+          tree=extracted/data/data/com.termux/files
+          file "$tree/usr/bin/nix"
+          readelf -h "$tree/usr/bin/nix" | grep -q 'Machine:.*AArch64\|Machine:.*ARM\|Machine:.*Intel 80386\|Machine:.*X86-64\|Machine:.*RISC-V' \
+            || { echo "unexpected ELF machine in nix binary" >&2; exit 1; }
+          # Archive the prefix contents (bin/, lib/, ...), so the tarball can
+          # be extracted directly into $PREFIX on a device.
+          tar -C "$tree/usr" -czf \
+            "dist/nix-${NIX_VERSION}-termux-${{ matrix.arch }}-bin.tar.gz" .
+          sha256sum dist/* > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-termux-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  bootstrap:
+    name: Build bootstrap zip
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-termux-${{ github.event.inputs.arch || 'aarch64' }}
+          path: dist
+
+      - name: Inject Nix into the stock Termux bootstrap
+        run: |
+          set -euo pipefail
+          ARCH="${{ github.event.inputs.arch || 'aarch64' }}"
+          cd packaging/termux
+          chmod +x make-nix-bootstrap.sh
+          ./make-nix-bootstrap.sh "$ARCH" "$(find ../../dist -name 'nix_*.deb' | head -1)"
+
+      - name: Upload bootstrap zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-bootstrap-${{ github.event.inputs.arch || 'aarch64' }}
+          path: packaging/termux/nix-bootstrap-*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [build, bootstrap]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          find dist -type f | sort
+          mapfile -t ASSETS < <(find dist -type f)
+          DEB="$(find dist -name 'nix_*.deb' | head -1)"
+          NIX_VERSION="$(basename "$DEB" | sed -E 's/^nix_//; s/_(aarch64|arm|i686|x86_64)\.deb$//')"
+          ARCH="$(basename "$DEB" | sed -E 's/^nix_.*_(aarch64|arm|i686|x86_64)\.deb$/\1/')"
+          NOTES="Nix ${NIX_VERSION} for Termux (native bionic build, no proot).
+
+          Install on a Termux device:
+              pkg install ./nix_${NIX_VERSION}_${ARCH}.deb
+          or unpack the binaries tarball into \$PREFIX:
+              tar -C \$PREFIX -xzf nix-${NIX_VERSION}-termux-${ARCH}-bin.tar.gz
+
+          See packaging/termux/README.md for device support and limitations."
+
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
+              --title "Nix $NIX_VERSION for Termux" --notes "$NOTES"
+          else
+            gh release delete nightly --yes 2>/dev/null || true
+            gh release create nightly "${ASSETS[@]}" --prerelease \
+              --title "Nix nightly for Termux ($NIX_VERSION)" --notes "$NOTES"
+          fi

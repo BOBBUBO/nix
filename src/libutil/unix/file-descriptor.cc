@@ -8,6 +8,10 @@
 #include <algorithm>
 #include <atomic>
 
+#if defined(__linux__) || defined(__FreeBSD__)
+#  include <sys/syscall.h>
+#endif
+
 #include "util-unix-config-private.hh"
 #include "../file-descriptor-private.hh"
 
@@ -96,7 +100,11 @@ void Pipe::create(bool nonBlocking)
 #if defined(__linux__) || defined(__FreeBSD__)
 static int unix_close_range(unsigned int first, unsigned int last, int flags)
 {
-#  if !HAVE_CLOSE_RANGE
+#  if defined(__ANDROID__)
+    /* Bionic hides close_range(2) behind its API-level availability guard,
+       but the syscall itself is available (kernel >= 5.9). */
+    return syscall(SYS_close_range, first, last, (unsigned int) flags);
+#  elif !HAVE_CLOSE_RANGE
     return syscall(SYS_close_range, first, last, (unsigned int) flags);
 #  else
     return close_range(first, last, flags);

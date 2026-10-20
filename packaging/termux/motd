@@ -1,0 +1,34 @@
+Welcome to Termux!
+
+Docs:       https://termux.dev/docs
+Donate:     https://termux.dev/donate
+Community:  https://termux.dev/community
+
+Working with Termux packages (apt/dpkg):
+
+ - Search:  pkg search <query>
+ - Install: pkg install <package>
+ - Update:  pkg update
+ - Upgrade: pkg upgrade
+
+Working with Nix (native build, no proot):
+
+ - Version: nix --version
+ - Eval:    nix eval --expr '1 + 2'
+ - Query:   nix-env -q
+ - Help:    nix-env --help
+
+Note: stock nixpkgs packages cannot bootstrap on Android, so nix-env is
+useful for self-contained derivations and Nix store paths, not for
+installing arbitrary nixpkgs packages. See the Nix source tree's
+packaging/termux/README.md for details.
+
+Notes:
+
+ - The Nix store lives at $PREFIX/nix/store; state and the DB under
+   $PREFIX/var/nix; per-user profiles under ~/.local/state/nix;
+   configuration in $PREFIX/etc/nix/nix.conf.
+ - Android has no user namespaces and SELinux blocks chroot/mount, so Nix
+   builds always run unsandboxed. This is an Android limitation.
+ - Stock nixpkgs cannot bootstrap on Android; self-contained derivations do
+   build. See packaging/termux/README.md in the Nix source tree.

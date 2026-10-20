@@ -138,7 +138,7 @@ if build_unit_tests
   )
 
   # Run the same tests again under `enosys` to exercise fallback paths on Linux.
-  if host_machine.system() == 'linux'
+  if nix_host_system == 'linux'
     enosys = find_program('enosys', required : false)
     if enosys.found()
       test(

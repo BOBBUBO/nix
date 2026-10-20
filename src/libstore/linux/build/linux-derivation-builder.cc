@@ -716,8 +716,14 @@ void ChrootLinuxDerivationBuilder::enterChroot()
     if (sethostname(hostname, sizeof(hostname)) == -1)
         throw SysError("cannot set host name");
     char domainname[] = "(none)"; // kernel default
+#ifdef __ANDROID__
+    /* Bionic does not expose setdomainname(2). */
+    if (::syscall(SYS_setdomainname, domainname, sizeof(domainname)) == -1)
+        throw SysError("cannot set domain name");
+#else
     if (setdomainname(domainname, sizeof(domainname)) == -1)
         throw SysError("cannot set domain name");
+#endif
 
     /* Make all filesystems private.  This is necessary
        because subtrees may have been mounted as "shared"

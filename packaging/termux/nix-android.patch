@@ -1,0 +1,293 @@
+diff --git a/nix-meson-build-support/common/meson.build b/nix-meson-build-support/common/meson.build
+index 177109ecf..72ae2664c 100644
+--- a/nix-meson-build-support/common/meson.build
++++ b/nix-meson-build-support/common/meson.build
+@@ -52,13 +52,18 @@ if meson.project_name() in [
+   'nix-store-c',
+   'nix-expr',
+   'nix-expr-c',
+-]
++] and not (host_machine.system() == 'android' and meson.project_name() == 'nix-expr-c')
+   # Catch vtables with vague linkage. All vtables must have a "key" function to make
+   # sure they are emitted as strong symbols (as required by Itanium ABI). This is needed
+   # in certain cases of dynamic linking, where weak symbols are not always coalesced. Otherwise
+   # typeinfo symbols get duplicated and dynamic_cast/exception handling ends up broken on Darwin's
+   # libc++.
+   # Search for 'virtual void anchor' in the repo to see how this is done.
++  #
++  # Disabled for nix-expr-c on Android: bdwgc's gc_cpp.h defines gc_cleanup
++  # without an out-of-line key function, so the C API translation units that
++  # include it would otherwise fail with -Werror=weak-vtables. The warning is
++  # about an external header, not Nix's own classes.
+   warning_flags += [ '-Werror=weak-vtables' ]
+ endif
+ 
+@@ -68,7 +73,9 @@ add_project_arguments(
+ )
+ 
+ # GCC doesn't benefit much from precompiled headers.
+-do_pch = cxx.get_id() == 'clang'
++# Disable PCH on Android: the NDK clang (r29, 21.0.0) segfaults while
++# generating the PCH (SIGSEGV in the parser at nix/util/source-path.hh).
++do_pch = cxx.get_id() == 'clang' and target_machine.system() != 'android'
+ 
+ # This is a clang-only option for improving build times.
+ # It forces the instantiation of templates in the PCH itself and
+@@ -77,7 +84,10 @@ do_pch = cxx.get_id() == 'clang'
+ # bother checking the version.
+ # This feature helps in particular with the expensive nlohmann::json template
+ # instantiations in libutil and libstore.
+-if cxx.get_id() == 'clang'
++# Only meaningful when PCH is enabled; with PCH off it forces templates to be
++# instantiated during parsing, which crashes the NDK clang (r29, 21.0.0) on
++# std::optional<...> members (SIGSEGV in Sema/instantiator).
++if cxx.get_id() == 'clang' and do_pch
+   add_project_arguments('-fpch-instantiate-templates', language : 'cpp')
+ endif
+ 
+diff --git a/nix-meson-build-support/deps-lists/meson.build b/nix-meson-build-support/deps-lists/meson.build
+index 223d6d83c..1b6f7b38c 100644
+--- a/nix-meson-build-support/deps-lists/meson.build
++++ b/nix-meson-build-support/deps-lists/meson.build
+@@ -37,3 +37,13 @@ deps_public_subproject = []
+ # cannot be expressed in the generated pkg-config file.
+ deps_private_no_pkgconfig = []
+ deps_public_no_pkgconfig = []
++
++# Termux (and Android in general) is Linux: same kernel interfaces, same
++# build code paths. Meson reports the system as "android", which would
++# otherwise skip all of the `system() == 'linux'` conditionals below and
++# produce a system double of "aarch64-android". Normalize it here so all
++# subprojects (which include this file first) see "linux".
++nix_host_system = host_machine.system()
++if nix_host_system == 'android'
++  nix_host_system = 'linux'
++endif
+diff --git a/src/libcmd/meson.build b/src/libcmd/meson.build
+index 7f9fe945f..7f60cbd34 100644
+--- a/src/libcmd/meson.build
++++ b/src/libcmd/meson.build
+@@ -51,7 +51,7 @@ configdata.set(
+ 
+ readline_flavor = get_option('readline-flavor')
+ if readline_flavor == 'editline'
+-  editline = dependency('libeditline', 'editline', version : '>=1.14')
++  editline = dependency('libeditline', 'editline', 'libedit', version : '>=1.14')
+   deps_private += editline
+ elif readline_flavor == 'readline'
+   readline = dependency('readline')
+diff --git a/src/libstore/filetransfer.cc b/src/libstore/filetransfer.cc
+index bf8263cd2..30fe14d40 100644
+--- a/src/libstore/filetransfer.cc
++++ b/src/libstore/filetransfer.cc
+@@ -95,6 +95,16 @@ std::optional<std::filesystem::path> FileTransferSettings::getDefaultSSLCertFile
+          {"/etc/ssl/certs/ca-certificates.crt", "/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt"})
+         if (pathAccessible(fn))
+             return fn;
++#ifdef __ANDROID__
++    /* Termux keeps its CA bundle under $PREFIX (e.g. $PREFIX/etc/tls/cert.pem),
++       which is not accessible at the standard locations. */
++    if (auto prefix = getEnvOs(OS_STR("PREFIX"))) {
++        for (auto & fn :
++             {*prefix + "/etc/tls/cert.pem", *prefix + "/etc/ssl/certs/ca-certificates.crt"})
++            if (pathAccessible(fn))
++                return fn;
++    }
++#endif
+ #endif
+     return std::nullopt;
+ }
+diff --git a/src/libstore/linux/build/linux-derivation-builder.cc b/src/libstore/linux/build/linux-derivation-builder.cc
+index 2d193066c..f55e58b80 100644
+--- a/src/libstore/linux/build/linux-derivation-builder.cc
++++ b/src/libstore/linux/build/linux-derivation-builder.cc
+@@ -716,8 +716,14 @@ void ChrootLinuxDerivationBuilder::enterChroot()
+     if (sethostname(hostname, sizeof(hostname)) == -1)
+         throw SysError("cannot set host name");
+     char domainname[] = "(none)"; // kernel default
++#ifdef __ANDROID__
++    /* Bionic does not expose setdomainname(2). */
++    if (::syscall(SYS_setdomainname, domainname, sizeof(domainname)) == -1)
++        throw SysError("cannot set domain name");
++#else
+     if (setdomainname(domainname, sizeof(domainname)) == -1)
+         throw SysError("cannot set domain name");
++#endif
+ 
+     /* Make all filesystems private.  This is necessary
+        because subtrees may have been mounted as "shared"
+diff --git a/src/libstore/meson.build b/src/libstore/meson.build
+index 092c96d7d..1294f45ab 100644
+--- a/src/libstore/meson.build
++++ b/src/libstore/meson.build
+@@ -28,7 +28,7 @@ subdir('nix-meson-build-support/default-system-cpu')
+ # Used in public header.
+ configdata_pub.set_quoted(
+   'NIX_LOCAL_SYSTEM',
+-  nix_system_cpu + '-' + host_machine.system(),
++  nix_system_cpu + '-' + nix_host_system,
+   description : 'This is the system name Nix expects for local running instance of Nix.\n\n' + 'See the "system" setting for additional details',
+ )
+ 
+@@ -80,7 +80,7 @@ foreach funcspec : check_funcs
+   configdata_priv.set(define_name, define_value)
+ endforeach
+ 
+-if host_machine.system() == 'linux'
++if nix_host_system == 'linux'
+   has_landlock = cxx.has_header('linux/landlock.h')
+   configdata_priv.set('HAVE_LANDLOCK', has_landlock.to_int())
+ endif
+@@ -125,7 +125,7 @@ curl = dependency('libcurl', 'curl', version : '>= 8.17.0')
+ deps_private += curl
+ 
+ # seccomp only makes sense on Linux
+-is_linux = host_machine.system() == 'linux'
++is_linux = nix_host_system == 'linux'
+ seccomp_required = get_option('seccomp-sandboxing')
+ if not is_linux and seccomp_required.enabled()
+   warning('Force-enabling seccomp on non-Linux does not make sense')
+@@ -349,7 +349,7 @@ endif
+ 
+ subdir('include/nix/store')
+ 
+-if host_machine.system() == 'linux'
++if nix_host_system == 'linux'
+   subdir('linux')
+ endif
+ 
+diff --git a/src/libstore/unix/meson.build b/src/libstore/unix/meson.build
+index fc115a193..0906e61c2 100644
+--- a/src/libstore/unix/meson.build
++++ b/src/libstore/unix/meson.build
+@@ -10,7 +10,7 @@ sources += files(
+ 
+ include_dirs += [ include_directories('build') ]
+ 
+-if (target_machine.system() == 'linux' or target_machine.system() == 'freebsd')
++if (nix_host_system == 'linux' or nix_host_system == 'freebsd')
+   sources += files(
+     'build/chroot-derivation-builder.cc',
+   )
+diff --git a/src/libutil-tests/meson.build b/src/libutil-tests/meson.build
+index 08368f463..9c486c55d 100644
+--- a/src/libutil-tests/meson.build
++++ b/src/libutil-tests/meson.build
+@@ -138,7 +138,7 @@ if build_unit_tests
+   )
+ 
+   # Run the same tests again under `enosys` to exercise fallback paths on Linux.
+-  if host_machine.system() == 'linux'
++  if nix_host_system == 'linux'
+     enosys = find_program('enosys', required : false)
+     if enosys.found()
+       test(
+diff --git a/src/libutil/file-descriptor.cc b/src/libutil/file-descriptor.cc
+index 231ea9fa4..cbe89e0cd 100644
+--- a/src/libutil/file-descriptor.cc
++++ b/src/libutil/file-descriptor.cc
+@@ -8,6 +8,9 @@
+ #include <span>
+ #include <fcntl.h>
+ #include <unistd.h>
++#ifdef __linux__
++#  include <sys/syscall.h>
++#endif
+ #ifdef _WIN32
+ #  include <winnt.h>
+ #  include <fileapi.h>
+@@ -305,7 +308,18 @@ void AutoCloseFD::startFsync() const
+ #ifdef __linux__
+     if (fd != -1) {
+         /* Ignore failure, since fsync must be run later anyway. This is just a performance optimization. */
++#ifdef __ANDROID__
++        /* Bionic does not expose sync_file_range(2) or its flags; call it
++           directly. 32-bit ARM only has sync_file_range2, whose argument
++           order is (fd, flags, offset, nbytes). */
++#  if defined(SYS_sync_file_range)
++        ::syscall(SYS_sync_file_range, fd, 0, 0, 2 /* SYNC_FILE_RANGE_WRITE */);
++#  elif defined(SYS_sync_file_range2)
++        ::syscall(SYS_sync_file_range2, fd, 2 /* SYNC_FILE_RANGE_WRITE */, 0, 0);
++#  endif
++#else
+         ::sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
++#endif
+     }
+ #endif
+ }
+diff --git a/src/libutil/meson.build b/src/libutil/meson.build
+index 6f5b14065..11ff13295 100644
+--- a/src/libutil/meson.build
++++ b/src/libutil/meson.build
+@@ -231,7 +231,7 @@ if not cxx.has_header('widechar_width.h', required : false)
+   include_dirs += include_directories('./widecharwidth')
+ endif
+ 
+-if host_machine.system() == 'linux'
++if nix_host_system == 'linux'
+   subdir('linux')
+ endif
+ 
+diff --git a/src/libutil/posix-source-accessor.cc b/src/libutil/posix-source-accessor.cc
+index 95c712a01..d6284862f 100644
+--- a/src/libutil/posix-source-accessor.cc
++++ b/src/libutil/posix-source-accessor.cc
+@@ -842,7 +842,11 @@ ref<SourceAccessor> makeFSSourceAccessor(std::filesystem::path root, bool trackL
+     assert(root.is_absolute());
+     AutoCloseFD fd = openFileReadonly(root, finalSymlink);
+ 
+-    if (!fd) {
++    if (!fd
++#ifdef __ANDROID__
++        && errno != EACCES && errno != EPERM
++#endif
++    ) {
+         if (finalSymlink == FinalSymlink::Follow || errno != NIX_ERR_OPEN_SYMLINK)
+             throw NativeSysError("opening file %1%", PathFmt(root));
+ 
+@@ -908,6 +912,17 @@ ref<SourceAccessor> makeFSSourceAccessor(std::filesystem::path root, bool trackL
+         return make_ref<SymlinkSourceAccessor>(std::move(linkTarget), std::move(root), trackLastModified, mtime);
+     }
+ 
++#ifdef __ANDROID__
++    /* On Android, SELinux blocks open(2) with O_RDONLY on "/" (and other
++       system directories), but allows O_PATH descriptors, which are
++       sufficient for the openat()/fstatat() traversal the accessor uses. */
++    if (!fd) {
++        fd = AutoCloseFD{open(root.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC)};
++        if (!fd)
++            throw NativeSysError("opening file %1%", PathFmt(root));
++    }
++#endif
++
+     auto st = nix::fstat(fd.get());
+     if (S_ISREG(st.st_mode))
+         return make_ref<PosixFileSourceAccessor>(std::move(fd), std::move(root), trackLastModified, st);
+diff --git a/src/libutil/unix/file-descriptor.cc b/src/libutil/unix/file-descriptor.cc
+index 523834b4c..f212a76bb 100644
+--- a/src/libutil/unix/file-descriptor.cc
++++ b/src/libutil/unix/file-descriptor.cc
+@@ -8,6 +8,10 @@
+ #include <algorithm>
+ #include <atomic>
+ 
++#if defined(__linux__) || defined(__FreeBSD__)
++#  include <sys/syscall.h>
++#endif
++
+ #include "util-unix-config-private.hh"
+ #include "../file-descriptor-private.hh"
+ 
+@@ -96,7 +100,11 @@ void Pipe::create(bool nonBlocking)
+ #if defined(__linux__) || defined(__FreeBSD__)
+ static int unix_close_range(unsigned int first, unsigned int last, int flags)
+ {
+-#  if !HAVE_CLOSE_RANGE
++#  if defined(__ANDROID__)
++    /* Bionic hides close_range(2) behind its API-level availability guard,
++       but the syscall itself is available (kernel >= 5.9). */
++    return syscall(SYS_close_range, first, last, (unsigned int) flags);
++#  elif !HAVE_CLOSE_RANGE
+     return syscall(SYS_close_range, first, last, (unsigned int) flags);
+ #  else
+     return close_range(first, last, flags);

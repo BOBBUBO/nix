@@ -231,7 +231,7 @@ if not cxx.has_header('widechar_width.h', required : false)
   include_dirs += include_directories('./widecharwidth')
 endif
 
-if host_machine.system() == 'linux'
+if nix_host_system == 'linux'
   subdir('linux')
 endif
 

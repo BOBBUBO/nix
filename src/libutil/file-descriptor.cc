@@ -8,6 +8,9 @@
 #include <span>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef __linux__
+#  include <sys/syscall.h>
+#endif
 #ifdef _WIN32
 #  include <winnt.h>
 #  include <fileapi.h>
@@ -305,7 +308,18 @@ void AutoCloseFD::startFsync() const
 #ifdef __linux__
     if (fd != -1) {
         /* Ignore failure, since fsync must be run later anyway. This is just a performance optimization. */
+#ifdef __ANDROID__
+        /* Bionic does not expose sync_file_range(2) or its flags; call it
+           directly. 32-bit ARM only has sync_file_range2, whose argument
+           order is (fd, flags, offset, nbytes). */
+#  if defined(SYS_sync_file_range)
+        ::syscall(SYS_sync_file_range, fd, 0, 0, 2 /* SYNC_FILE_RANGE_WRITE */);
+#  elif defined(SYS_sync_file_range2)
+        ::syscall(SYS_sync_file_range2, fd, 2 /* SYNC_FILE_RANGE_WRITE */, 0, 0);
+#  endif
+#else
         ::sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
+#endif
     }
 #endif
 }

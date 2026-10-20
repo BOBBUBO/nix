@@ -95,6 +95,16 @@ std::optional<std::filesystem::path> FileTransferSettings::getDefaultSSLCertFile
          {"/etc/ssl/certs/ca-certificates.crt", "/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt"})
         if (pathAccessible(fn))
             return fn;
+#ifdef __ANDROID__
+    /* Termux keeps its CA bundle under $PREFIX (e.g. $PREFIX/etc/tls/cert.pem),
+       which is not accessible at the standard locations. */
+    if (auto prefix = getEnvOs(OS_STR("PREFIX"))) {
+        for (auto & fn :
+             {*prefix + "/etc/tls/cert.pem", *prefix + "/etc/ssl/certs/ca-certificates.crt"})
+            if (pathAccessible(fn))
+                return fn;
+    }
+#endif
 #endif
     return std::nullopt;
 }

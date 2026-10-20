@@ -37,3 +37,13 @@ deps_public_subproject = []
 # cannot be expressed in the generated pkg-config file.
 deps_private_no_pkgconfig = []
 deps_public_no_pkgconfig = []
+
+# Termux (and Android in general) is Linux: same kernel interfaces, same
+# build code paths. Meson reports the system as "android", which would
+# otherwise skip all of the `system() == 'linux'` conditionals below and
+# produce a system double of "aarch64-android". Normalize it here so all
+# subprojects (which include this file first) see "linux".
+nix_host_system = host_machine.system()
+if nix_host_system == 'android'
+  nix_host_system = 'linux'
+endif

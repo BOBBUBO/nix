@@ -51,7 +51,7 @@ configdata.set(
 
 readline_flavor = get_option('readline-flavor')
 if readline_flavor == 'editline'
-  editline = dependency('libeditline', 'editline', version : '>=1.14')
+  editline = dependency('libeditline', 'editline', 'libedit', version : '>=1.14')
   deps_private += editline
 elif readline_flavor == 'readline'
   readline = dependency('readline')

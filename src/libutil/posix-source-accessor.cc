@@ -842,7 +842,11 @@ ref<SourceAccessor> makeFSSourceAccessor(std::filesystem::path root, bool trackL
     assert(root.is_absolute());
     AutoCloseFD fd = openFileReadonly(root, finalSymlink);
 
-    if (!fd) {
+    if (!fd
+#ifdef __ANDROID__
+        && errno != EACCES && errno != EPERM
+#endif
+    ) {
         if (finalSymlink == FinalSymlink::Follow || errno != NIX_ERR_OPEN_SYMLINK)
             throw NativeSysError("opening file %1%", PathFmt(root));
 
@@ -907,6 +911,17 @@ ref<SourceAccessor> makeFSSourceAccessor(std::filesystem::path root, bool trackL
         auto linkTarget = readLinkAt(parentFd.get(), relPath);
         return make_ref<SymlinkSourceAccessor>(std::move(linkTarget), std::move(root), trackLastModified, mtime);
     }
+
+#ifdef __ANDROID__
+    /* On Android, SELinux blocks open(2) with O_RDONLY on "/" (and other
+       system directories), but allows O_PATH descriptors, which are
+       sufficient for the openat()/fstatat() traversal the accessor uses. */
+    if (!fd) {
+        fd = AutoCloseFD{open(root.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC)};
+        if (!fd)
+            throw NativeSysError("opening file %1%", PathFmt(root));
+    }
+#endif
 
     auto st = nix::fstat(fd.get());
     if (S_ISREG(st.st_mode))

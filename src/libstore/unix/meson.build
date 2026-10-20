@@ -10,7 +10,7 @@ sources += files(
 
 include_dirs += [ include_directories('build') ]
 
-if (target_machine.system() == 'linux' or target_machine.system() == 'freebsd')
+if (nix_host_system == 'linux' or nix_host_system == 'freebsd')
   sources += files(
     'build/chroot-derivation-builder.cc',
   )

@@ -28,7 +28,7 @@ subdir('nix-meson-build-support/default-system-cpu')
 # Used in public header.
 configdata_pub.set_quoted(
   'NIX_LOCAL_SYSTEM',
-  nix_system_cpu + '-' + host_machine.system(),
+  nix_system_cpu + '-' + nix_host_system,
   description : 'This is the system name Nix expects for local running instance of Nix.\n\n' + 'See the "system" setting for additional details',
 )
 
@@ -80,7 +80,7 @@ foreach funcspec : check_funcs
   configdata_priv.set(define_name, define_value)
 endforeach
 
-if host_machine.system() == 'linux'
+if nix_host_system == 'linux'
   has_landlock = cxx.has_header('linux/landlock.h')
   configdata_priv.set('HAVE_LANDLOCK', has_landlock.to_int())
 endif
@@ -125,7 +125,7 @@ curl = dependency('libcurl', 'curl', version : '>= 8.17.0')
 deps_private += curl
 
 # seccomp only makes sense on Linux
-is_linux = host_machine.system() == 'linux'
+is_linux = nix_host_system == 'linux'
 seccomp_required = get_option('seccomp-sandboxing')
 if not is_linux and seccomp_required.enabled()
   warning('Force-enabling seccomp on non-Linux does not make sense')
@@ -349,7 +349,7 @@ endif
 
 subdir('include/nix/store')
 
-if host_machine.system() == 'linux'
+if nix_host_system == 'linux'
   subdir('linux')
 endif
 

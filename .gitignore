@@ -41,3 +41,14 @@ flake-regressions
 
 # direnv
 .direnv/
+old-nix/
+apk-tools/
+
+# Termux packaging scratch/output
+/packaging/termux/.nix-bootstrap/
+/packaging/termux/nix-bootstrap-*.zip
+/packaging/termux/termux-packages/*/src/
+/packaging/termux/*.deb
+/packaging/termux/nix-*-bin.tar.gz
+/nix_*.deb
+/nix-*-bin.tar.gz

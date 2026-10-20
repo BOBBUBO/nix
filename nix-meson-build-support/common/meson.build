@@ -52,13 +52,18 @@ if meson.project_name() in [
   'nix-store-c',
   'nix-expr',
   'nix-expr-c',
-]
+] and not (host_machine.system() == 'android' and meson.project_name() == 'nix-expr-c')
   # Catch vtables with vague linkage. All vtables must have a "key" function to make
   # sure they are emitted as strong symbols (as required by Itanium ABI). This is needed
   # in certain cases of dynamic linking, where weak symbols are not always coalesced. Otherwise
   # typeinfo symbols get duplicated and dynamic_cast/exception handling ends up broken on Darwin's
   # libc++.
   # Search for 'virtual void anchor' in the repo to see how this is done.
+  #
+  # Disabled for nix-expr-c on Android: bdwgc's gc_cpp.h defines gc_cleanup
+  # without an out-of-line key function, so the C API translation units that
+  # include it would otherwise fail with -Werror=weak-vtables. The warning is
+  # about an external header, not Nix's own classes.
   warning_flags += [ '-Werror=weak-vtables' ]
 endif
 
@@ -68,7 +73,9 @@ add_project_arguments(
 )
 
 # GCC doesn't benefit much from precompiled headers.
-do_pch = cxx.get_id() == 'clang'
+# Disable PCH on Android: the NDK clang (r29, 21.0.0) segfaults while
+# generating the PCH (SIGSEGV in the parser at nix/util/source-path.hh).
+do_pch = cxx.get_id() == 'clang' and target_machine.system() != 'android'
 
 # This is a clang-only option for improving build times.
 # It forces the instantiation of templates in the PCH itself and
@@ -77,7 +84,10 @@ do_pch = cxx.get_id() == 'clang'
 # bother checking the version.
 # This feature helps in particular with the expensive nlohmann::json template
 # instantiations in libutil and libstore.
-if cxx.get_id() == 'clang'
+# Only meaningful when PCH is enabled; with PCH off it forces templates to be
+# instantiated during parsing, which crashes the NDK clang (r29, 21.0.0) on
+# std::optional<...> members (SIGSEGV in Sema/instantiator).
+if cxx.get_id() == 'clang' and do_pch
   add_project_arguments('-fpch-instantiate-templates', language : 'cpp')
 endif
 
