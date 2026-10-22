@@ -444,9 +444,14 @@ bash packaging/termux/make-release.sh \
     --deb "$PREFIX/tmp/nix-stage/nix_2.36.0-1_aarch64.deb" \
     --bootstrap packaging/termux/nix-bootstrap-aarch64.zip
 
-# 4. publish it (GitHub release with checksums and notes)
-bash packaging/termux/make-release.sh ... --publish v2.36.0-termux.1
+# 4. publish it: tag the current commit, push the tag and create the
+#    GitHub release with the checksums and notes
+bash packaging/termux/make-release.sh ... --publish termux-2.36.0-1
 ```
+
+Tags starting with `v` also trigger the CI release build, so the on-device
+script uses a `termux-` prefix. Use a `v*` tag when you want CI to build and
+publish the artifacts instead.
 
 `dist/` then contains:
 

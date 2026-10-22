@@ -20,7 +20,7 @@
 #       --deb "$PREFIX/tmp/nix-stage/out/nix_2.36.0-1_aarch64.deb" \
 #       --bootstrap packaging/termux/nix-bootstrap-aarch64.zip
 #
-#   ... --publish v2.36.0-termux.1     # also push a GitHub release
+#   ... --publish termux-2.36.0-1     # tag + push and create the GitHub release
 set -eu
 
 PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -90,12 +90,15 @@ cp "$DEB" "$DIST/nix_${FULL_VERSION}_${ARCH}.deb"
 if [ -n "$BOOTSTRAP" ]; then
 	[ -f "$BOOTSTRAP" ] || die "no such bootstrap: $BOOTSTRAP"
 	cp "$BOOTSTRAP" "$DIST/nix-bootstrap-${ARCH}.zip"
+	# Ship the installer with the bootstrap so the instructions below work
+	# with nothing but the release assets.
+	cp "$SCRIPT_DIR/install-nix-bootstrap.sh" "$DIST/install-nix-bootstrap.sh"
 fi
 
 # Standalone binaries: the contents of the prefix, so it can be unpacked into
 # $PREFIX on a device that has no package manager for it.
 TARBALL="$DIST/nix-${FULL_VERSION}-termux-${ARCH}-bin.tar.gz"
-STAGED_PREFIX="$STAGE${PREFIX#/}"
+STAGED_PREFIX="${STAGE%/}$PREFIX"
 if [ -d "$STAGED_PREFIX" ]; then
 	log "creating binaries tarball..."
 	tar -C "$STAGED_PREFIX" -czf "$TARBALL" .
@@ -148,7 +151,7 @@ Flash it with a Termux app build that loads a custom bootstrap zip, or
 install it on a running device without rebuilding the app:
 
 \`\`\`bash
-# 1. in a normal Termux session
+# 1. in a normal Termux session (install-nix-bootstrap.sh is in this release)
 bash install-nix-bootstrap.sh nix-bootstrap-${ARCH}.zip
 # 2. restart Termux in failsafe (recovery) mode, then
 /data/data/com.termux/files/install-nix-bootstrap.sh --finalize
@@ -174,18 +177,37 @@ documentation.
 EOF
 
 log "computing checksums..."
-(cd "$DIST" && sha256sum nix_*.deb nix-*.tar.gz nix-bootstrap-*.zip > SHA256SUMS 2>/dev/null || true)
+(cd "$DIST" && sha256sum nix_*.deb nix-*.tar.gz nix-bootstrap-*.zip install-nix-bootstrap.sh > SHA256SUMS 2>/dev/null || true)
 (cd "$DIST" && sha256sum RELEASE-NOTES.md >> SHA256SUMS)
 
 log "done. artifacts in $DIST:"
 ls -lh "$DIST"
 
+# The build runs under a restrictive umask; release assets should be
+# world-readable (the installer stays executable).
+find "$DIST" -type f -exec chmod 644 {} +
+chmod 755 "$DIST/install-nix-bootstrap.sh" 2>/dev/null || true
+
 if [ -n "$PUBLISH" ]; then
 	command -v gh >/dev/null || die "gh is required for --publish"
+	command -v git >/dev/null || die "git is required for --publish"
+
+	# Tag the commit that built these artifacts; tags starting with "v" also
+	# trigger the CI release build, so this script uses a "termux-" prefix.
+	if git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$PUBLISH" >/dev/null; then
+		log "tag $PUBLISH already exists"
+	else
+		log "tagging $PUBLISH ..."
+		git -C "$REPO_DIR" tag -a "$PUBLISH" -m "Nix $VERSION for Termux"
+		git -C "$REPO_DIR" push origin "$PUBLISH"
+	fi
+
 	log "publishing GitHub release $PUBLISH ..."
 	gh release create "$PUBLISH" \
+		--verify-tag \
 		--title "Nix $VERSION for Termux" \
 		--notes-file "$DIST/RELEASE-NOTES.md" \
-		"$DIST"/nix_*.deb "$DIST"/nix-bootstrap-*.zip "$DIST"/nix-*.tar.gz "$DIST"/SHA256SUMS
+		"$DIST"/nix_*.deb "$DIST"/nix-bootstrap-*.zip "$DIST"/nix-*.tar.gz \
+		"$DIST"/install-nix-bootstrap.sh "$DIST"/SHA256SUMS
 	log "published: https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/$PUBLISH"
 fi

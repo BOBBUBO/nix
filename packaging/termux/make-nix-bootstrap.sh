@@ -31,8 +31,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 TERMUX_REPO="https://packages-cf.termux.dev/apt/termux-main"
-# Where the apk-tools checkout lives (it is a separate repository).
-APK_TOOLS_DIR="${APK_TOOLS_DIR:-$REPO_DIR/apk-tools}"
+# Where the apk-tools checkout lives (a separate repository next to this one).
+APK_TOOLS_DIR="${APK_TOOLS_DIR:-$(dirname "$REPO_DIR")/apk-tools}"
 # Published apk bootstrap zips live in the apk-termux-repo.
 APK_BOOTSTRAP_URL_BASE="${APK_BOOTSTRAP_URL_BASE:-https://raw.githubusercontent.com/BOBBUBO/apk-termux-repo/main/bootstrap}"
 
