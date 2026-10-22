@@ -180,13 +180,13 @@ log "computing checksums..."
 (cd "$DIST" && sha256sum nix_*.deb nix-*.tar.gz nix-bootstrap-*.zip install-nix-bootstrap.sh > SHA256SUMS 2>/dev/null || true)
 (cd "$DIST" && sha256sum RELEASE-NOTES.md >> SHA256SUMS)
 
-log "done. artifacts in $DIST:"
-ls -lh "$DIST"
-
 # The build runs under a restrictive umask; release assets should be
 # world-readable (the installer stays executable).
 find "$DIST" -type f -exec chmod 644 {} +
 chmod 755 "$DIST/install-nix-bootstrap.sh" 2>/dev/null || true
+
+log "done. artifacts in $DIST:"
+ls -lh "$DIST"
 
 if [ -n "$PUBLISH" ]; then
 	command -v gh >/dev/null || die "gh is required for --publish"
