@@ -4,12 +4,14 @@ Docs:       https://termux.dev/docs
 Donate:     https://termux.dev/donate
 Community:  https://termux.dev/community
 
-Working with Termux packages (apt/dpkg):
+This bootstrap is apt-free: apk is the package manager.
 
- - Search:  pkg search <query>
- - Install: pkg install <package>
- - Update:  pkg update
- - Upgrade: pkg upgrade
+Working with packages (apk):
+
+ - Search:  apk search / pkg search <query>
+ - Install: apk add / pkg install <package>
+ - Update:  apk update
+ - Upgrade: apk upgrade
 
 Working with Nix (native build, no proot):
 
@@ -32,3 +34,5 @@ Notes:
    builds always run unsandboxed. This is an Android limitation.
  - Stock nixpkgs cannot bootstrap on Android; self-contained derivations do
    build. See packaging/termux/README.md in the Nix source tree.
+ - The bootstrap second stage initialises both the apk and the Nix database;
+   if it was skipped, the next login does it (etc/profile.d/99-nix-init.sh).

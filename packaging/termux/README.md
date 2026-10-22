@@ -12,7 +12,9 @@ Everything is reproducible with three scripts:
 |---|---|
 | [`packaging/termux/build.sh`](build.sh) | one-shot native build on the device: device checks → deps → configure → build → install → smoke test |
 | [`packaging/termux/make-deb.sh`](make-deb.sh) | package a staged native install into a Termux `.deb` |
-| [`packaging/termux/make-nix-bootstrap.sh`](make-nix-bootstrap.sh) | inject Nix + runtime deps into a stock Termux bootstrap zip |
+| [`packaging/termux/make-nix-bootstrap.sh`](make-nix-bootstrap.sh) | build an apt-free Termux bootstrap: apk-tools bootstrap + Nix |
+| [`packaging/termux/install-nix-bootstrap.sh`](install-nix-bootstrap.sh) | install that bootstrap on a device (usr/usern swap, no app rebuild) |
+| [`packaging/termux/make-release.sh`](make-release.sh) | assemble the release bundle (.deb, bootstrap, tarball, checksums, notes) and publish it |
 
 The complete source diff is in [`packaging/termux/nix-android.patch`](nix-android.patch).
 
@@ -368,27 +370,105 @@ mkdir -p $PREFIX/nix/store $PREFIX/var/nix/builds $PREFIX/var/log/nix
 $PREFIX/bin/nix-store --init
 ```
 
-### Termux bootstrap injection
+### Termux bootstrap injection (apt-free, apk + Nix)
 
 [`make-nix-bootstrap.sh`](make-nix-bootstrap.sh) builds
-`nix-bootstrap-<arch>.zip`: a stock Termux bootstrap with Nix and its runtime
-dependencies injected, `nix.conf` preconfigured, the store/state directories
-created, and a first-login profile hook that initialises the Nix database
-(the stock package postinst second stage is left intact).
+`nix-bootstrap-<arch>.zip`: a Termux bootstrap that has **no apt/dpkg at all**
+and ships **Nix** on top of the apk-tools bootstrap:
+
+| layer | what it provides |
+|---|---|
+| apk-tools bootstrap (base) | stock Termux bootstrap with the apt/dpkg stack stripped, `apk` as the package manager, an apk-backed `pkg` shim, apk repositories/keys and an apk-based bootstrap second stage |
+| Nix (injected) | `nix`, `nix-env`, `nix-store`, ... plus the runtime libraries they need, the store/state layout and a preconfigured `nix.conf` |
+| combined second stage | one bootstrap stage that initialises **both** the apk database and the single-user Nix database |
+
+The base bootstrap is reused from a local `apk-tools` checkout when there is
+one (`../apk-tools/make-apk-bootstrap.sh` is run for you); otherwise the
+published `apk-bootstrap-<arch>.zip` is downloaded.
 
 ```bash
 cd packaging/termux
 ./make-nix-bootstrap.sh aarch64                    # fetch the latest CI .deb
 ./make-nix-bootstrap.sh aarch64 ./nix_*.deb        # or use a local .deb
+./make-nix-bootstrap.sh aarch64 --apk-bootstrap ./apk-bootstrap-aarch64.zip
 ```
 
-Unlike the apk-tools bootstrap (`make-apk-bootstrap.sh`), this keeps
-`apt`/`dpkg`: Nix cannot install Termux `.deb` packages, and stock nixpkgs does
-not bootstrap on Android, so stripping apt would leave you unable to install
-Termux packages. The two package managers coexist — `pkg install` for Termux
-packages, `nix-env`/`nix` for Nix store paths. Test the resulting zip on a
-secondary device (or in a throwaway prefix) before flashing it over a working
-install.
+Options: `--apk-bootstrap FILE|URL` (use a specific apk base),
+`--apk-tools-deb FILE` (inject apk when the base has none) and
+`--refresh-base` (rebuild the cached apk bootstrap).
+
+#### Installing it on a device
+
+[`install-nix-bootstrap.sh`](install-nix-bootstrap.sh) installs the zip on a
+running device without rebuilding the Termux app, using the same
+`usr` -> `usr-n` swap as the apk-tools installer (and reusing it when
+`apk-tools/install-apk-bootstrap.sh` is available):
+
+```bash
+# 1. in a normal Termux session
+bash packaging/termux/install-nix-bootstrap.sh packaging/termux/nix-bootstrap-aarch64.zip
+# 2. restart Termux in failsafe (recovery) mode, then
+/data/data/com.termux/files/install-nix-bootstrap.sh --finalize
+# 3. exit failsafe, start Termux normally
+```
+
+The old prefix is kept as `usr.old` until you delete it.
+
+#### What replaces apt
+
+`apt`/`dpkg` are gone, `apk` is the package manager and `pkg` is a thin shim
+over it (`pkg install` -> `apk add`, `pkg update` -> `apk update`, ...). Termux
+packages are available as repacked `.apk` files in the apk repositories, so
+`apk add <package>` still installs them. Nix is the second package manager and
+only manages Nix store paths - it cannot install Termux packages.
+
+Test the resulting zip on a secondary device (or in a throwaway prefix) before
+flashing it over a working install.
+
+### Releasing
+
+`make-release.sh` bundles the artifacts and writes the installation notes:
+
+```bash
+# 1. build and stage the native install, then package it
+bash packaging/termux/build.sh --destdir "$PREFIX/tmp/nix-stage"
+bash packaging/termux/make-deb.sh "$PREFIX/tmp/nix-stage"
+
+# 2. build the apt-free bootstrap around that .deb
+bash packaging/termux/make-nix-bootstrap.sh aarch64 \
+    "$PREFIX/tmp/nix-stage/nix_2.36.0-1_aarch64.deb"
+
+# 3. assemble the release bundle (dist/)
+bash packaging/termux/make-release.sh \
+    --stage "$PREFIX/tmp/nix-stage" \
+    --deb "$PREFIX/tmp/nix-stage/nix_2.36.0-1_aarch64.deb" \
+    --bootstrap packaging/termux/nix-bootstrap-aarch64.zip
+
+# 4. publish it (GitHub release with checksums and notes)
+bash packaging/termux/make-release.sh ... --publish v2.36.0-termux.1
+```
+
+`dist/` then contains:
+
+| file | what it is |
+|---|---|
+| `nix_2.36.0-1_aarch64.deb` | Termux package (`pkg install ./nix_*.deb`) |
+| `nix-bootstrap-aarch64.zip` | apt-free bootstrap: `apk` + Nix |
+| `nix-2.36.0-termux-aarch64-bin.tar.gz` | binaries only, unpack into `$PREFIX` |
+| `SHA256SUMS` | checksums |
+| `RELEASE-NOTES.md` | how to install the deb and the bootstrap |
+
+The release notes are the user-facing installation instructions:
+
+```bash
+# .deb on an existing Termux install
+pkg install ./nix_2.36.0-1_aarch64.deb
+
+# apt-free bootstrap on a running device
+bash install-nix-bootstrap.sh nix-bootstrap-aarch64.zip
+# then in failsafe mode:
+/data/data/com.termux/files/install-nix-bootstrap.sh --finalize
+```
 
 ---
 
@@ -451,9 +531,11 @@ nix build --impure --expr 'builtins.derivation {
   no coreutils PATH, glibc bootstrap binaries, etc.), so deep package builds stop
   early in bootstrap. Self-contained derivations (as in the example above) build
   and register correctly.
-- **nix-env cannot replace apt for Termux packages.** Nix store paths live under
-  `$PREFIX/nix/store` and are self-contained; Termux `.deb`s still need `pkg`/
-  `apt`. The two package managers coexist happily.
+- **nix-env cannot install Termux packages.** Nix store paths live under
+  `$PREFIX/nix/store` and are self-contained; Termux packages are installed by
+  the system package manager. In a normal Termux install that is `pkg`/`apt`;
+  in the Nix bootstrap (which has no apt/dpkg) it is `apk`, with `pkg` as a
+  shim over it. The two package managers coexist happily.
 - **`/dev/stdin` with a *pipe*** (`echo x | nix-instantiate --eval /dev/stdin`)
   fails with `path '/proc/<pid>/fd/pipe:[…]' does not exist` — this is identical
   to Linux (the magic link doesn't resolve for pipes, see `proc_pid_fd(5)`).
@@ -469,7 +551,9 @@ nix build --impure --expr 'builtins.derivation {
 packaging/termux/
 ├── build.sh                       # one-shot on-device build: checks → deps → build → install → smoke test
 ├── make-deb.sh                    # package a staged native install into a Termux .deb
-├── make-nix-bootstrap.sh          # inject Nix into a stock Termux bootstrap zip
+├── make-nix-bootstrap.sh          # build the apt-free bootstrap: apk base + Nix
+├── install-nix-bootstrap.sh       # device-side installer (usr -> usr-n swap)
+├── make-release.sh                # assemble/publish the release bundle
 ├── motd                           # MOTD for the injected bootstrap
 ├── nix-android.patch              # the full source diff
 ├── termux-packages/nix/build.sh   # recipe overlay for termux/termux-packages

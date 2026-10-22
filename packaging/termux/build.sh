@@ -192,7 +192,9 @@ check_tools() {
     for t in git curl cmake clang ninja pip pkg-config make; do
         command -v "$t" >/dev/null 2>&1 || { warn "Tool '$t' not found (it will be installed with the packages)."; missing=1; }
     done
-    [ "$missing" = 1 ] && info "Run without --no-deps to install missing tools."
+    if [ "$missing" = 1 ]; then
+        info "Run without --no-deps to install missing tools."
+    fi
 }
 
 preflight() {
@@ -212,11 +214,12 @@ install_packages() {
     local pkg_list
     pkg_list="ninja nlohmann-json boost boost-headers libseccomp libsodium libgc \
               libgit2 lowdown libedit readline libarchive libcurl libsqlite openssl \
-              brotli zstd xz-utils liblz4 bison flex clang cmake git python pip \
+              brotli zstd xz-utils liblz4 bison flex clang cmake git python python-pip \
               pkg-config busybox toml11"
     msg "Installing packages (pkg install -y)..."
-    pkg install -y $pkg_list
-    python -m pip install --break-system-packages --upgrade meson
+    pkg install -y $pkg_list || die "pkg install failed (is the network reachable?)"
+    python -m pip install --break-system-packages --upgrade meson \
+        || die "pip install meson failed."
     msg "Packages installed."
 }
 
@@ -286,9 +289,16 @@ build_nix() {
     # Meson's cmake-method lookups (toml11) need to search Termux's prefix,
     # which is not one of CMake's default system prefixes.
     export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-$PREFIX}"
+    # Release builds are stripped, like Termux's own packages; debug builds
+    # keep their symbols so crashes can be symbolised.
+    local strip_flag="--strip"
+    if [ "$BUILDTYPE" = "debug" ]; then
+        strip_flag=""
+    fi
     meson setup "$BUILD_DIR/build" "$REPO_DIR" \
         --prefix="$PREFIX" \
         --buildtype="$BUILDTYPE" \
+        $strip_flag \
         -Dunit-tests=false \
         -Dfunctional-tests=false \
         -Ddoc-gen=false \

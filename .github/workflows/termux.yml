@@ -151,12 +151,15 @@ jobs:
           name: nix-termux-${{ github.event.inputs.arch || 'aarch64' }}
           path: dist
 
-      - name: Inject Nix into the stock Termux bootstrap
+      - name: Build the apt-free bootstrap (apk base + Nix)
         run: |
           set -euo pipefail
           ARCH="${{ github.event.inputs.arch || 'aarch64' }}"
           cd packaging/termux
           chmod +x make-nix-bootstrap.sh
+          # The base is the apk-tools bootstrap (apt/dpkg stripped, apk as the
+          # package manager). Without a local apk-tools checkout the published
+          # apk-bootstrap-<arch>.zip is downloaded.
           ./make-nix-bootstrap.sh "$ARCH" "$(find ../../dist -name 'nix_*.deb' | head -1)"
 
       - name: Upload bootstrap zip
@@ -195,6 +198,11 @@ jobs:
               pkg install ./nix_${NIX_VERSION}_${ARCH}.deb
           or unpack the binaries tarball into \$PREFIX:
               tar -C \$PREFIX -xzf nix-${NIX_VERSION}-termux-${ARCH}-bin.tar.gz
+
+          nix-bootstrap-${ARCH}.zip is a full bootstrap without apt/dpkg:
+          apk is the package manager, Nix manages the Nix store. Install it
+          on a running device with packaging/termux/install-nix-bootstrap.sh
+          (usr -> usr-n swap, no app rebuild).
 
           See packaging/termux/README.md for device support and limitations."
 

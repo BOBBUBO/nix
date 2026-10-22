@@ -52,3 +52,4 @@ apk-tools/
 /packaging/termux/nix-*-bin.tar.gz
 /nix_*.deb
 /nix-*-bin.tar.gz
+/dist/
